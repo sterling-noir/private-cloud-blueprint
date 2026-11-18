@@ -1,0 +1,12 @@
+# Local build (2026-11-15): upstream mautrix-imessage 300ba6d + ignore-chats patch (ignorechats.go,
+# hooks in imessage.go/portal.go), on top of the exact upstream image we ran (alpine 3.19).
+FROM golang:1.23-alpine3.19 AS build
+RUN apk add --no-cache gcc g++ musl-dev olm-dev
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=1 go build -trimpath \
+    -ldflags "-X main.Commit=300ba6d0-home-ignorechats -X 'main.BuildTime=Nov 15 2026'" \
+    -o /out/mautrix-imessage .
+FROM dock.mau.dev/mautrix/imessage@sha256:ac5014db265579cef8678de0b73c7e8fe2d9daf2f2dc3756e603ee305c069bb0
+RUN apk add --no-cache olm libstdc++
+COPY --from=build /out/mautrix-imessage /usr/bin/mautrix-imessage

@@ -1,0 +1,21 @@
+# Goose read-only gateway (Phase 5b, 2026-11-15). See bot-policy.md section 5.
+services:
+  goose-gateway:
+    image: python@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e  # python 3.13-alpine, pinned 2026-11-15
+    container_name: goose-gateway
+    restart: unless-stopped
+    network_mode: host          # reaches Tuwunel on 127.0.0.1:6167; listens only on the Tailscale IP
+    user: "1000:1000"
+    environment:
+      BIND: 100.64.0.10
+      PORT: "8787"
+      GOOSE_DIR: /data
+      TZ: America/New_York
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./:/data
+      - ./gateway.py:/app/gateway.py:ro
+    command: ["python3", "/app/gateway.py"]
+    mem_limit: 128m
+    logging:
+      options: {max-size: "5m", max-file: "2"}

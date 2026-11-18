@@ -1,0 +1,19 @@
+[global]
+server_name = "home.example.ts.net"
+database_path = "/var/lib/tuwunel"
+address = "0.0.0.0"
+port = 6167
+
+# private server: only you, no talking to other Matrix servers
+allow_federation = false
+allow_registration = false
+registration_token = "<SECRET registration_token>"
+
+allow_legacy_media = true
+max_request_size = 100_000_000
+
+# remove a room from the server once nobody is left in it
+delete_rooms_after_leave = true
+
+[global.well_known]
+client = "https://home.example.ts.net"

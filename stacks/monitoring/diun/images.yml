@@ -1,0 +1,41 @@
+# Images Diun watches. watch_repo + include_tags = "tell me when a new release tag appears".
+# Running versions (2026-11-14): tuwunel v1.9.4; telegram/signal built 2026-10-30; imessage v1
+# (no release tags, so its `latest` build is watched); ntfy v2.37.2; uptime-kuma 2.5.11; diun 4.33.1.
+
+- name: ghcr.io/matrix-construct/tuwunel:latest
+  watch_repo: true
+  include_tags: ['^v\d+\.\d+\.\d+$']
+  sort_tags: semver
+  max_tags: 5
+
+- name: dock.mau.dev/mautrix/telegram:latest
+  watch_repo: true
+  include_tags: ['^v\d+\.\d+(\.\d+)?$']
+  sort_tags: semver
+  max_tags: 5
+
+- name: dock.mau.dev/mautrix/signal:latest
+  watch_repo: true
+  include_tags: ['^v\d+\.\d+(\.\d+)?$']
+  sort_tags: semver
+  max_tags: 5
+
+- name: dock.mau.dev/mautrix/imessage:latest
+
+- name: binwiederhier/ntfy:latest
+  watch_repo: true
+  include_tags: ['^v\d+\.\d+\.\d+$']
+  sort_tags: semver
+  max_tags: 5
+
+- name: louislam/uptime-kuma:2
+  watch_repo: true
+  include_tags: ['^2\.\d+\.\d+$']
+  sort_tags: semver
+  max_tags: 5
+
+- name: crazymax/diun:latest
+  watch_repo: true
+  include_tags: ['^\d+\.\d+\.\d+$']
+  sort_tags: semver
+  max_tags: 5

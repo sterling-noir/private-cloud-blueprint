@@ -1,0 +1,54 @@
+# Images are pinned to exact digests (Phase 4b, 2026-11-03). To update one: back up ~/matrix first,
+# then replace the @sha256:... with the new image digest and run: docker compose up -d
+# Human versions on 2026-11-03: tuwunel 1.9.4; mautrix telegram/signal images built 2026-10-30; imessage (v1 bridge) built 2026-05-14.
+services:
+  tuwunel:
+    image: ghcr.io/matrix-construct/tuwunel@sha256:3dde1e9b3503c68218f95415ec3ebff522bd945065ba76019d408543540d1730  # 2.0.0 (was 1.9.4, see compose.yml.bak-pre2-*)
+    container_name: tuwunel
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6167:6167"
+    volumes:
+      - ./tuwunel-data:/var/lib/tuwunel
+      - ./tuwunel.toml:/etc/tuwunel.toml:ro
+    environment:
+      TUWUNEL_CONFIG: /etc/tuwunel.toml
+    ulimits:
+      nofile:
+        soft: 1048567
+        hard: 1048567
+
+  mautrix-telegram:
+    image: dock.mau.dev/mautrix/telegram@sha256:fe78dbce96dca82f077371f429776ab1fee3b65ddc83924a257279b142160945  # v0.2611.0 (2026-11-18; was v26.10 0ab1d5b97256b1b6b3afb0318f6f4fcc9d524f0142433fc3806df9f4de17c8a1)
+    container_name: mautrix-telegram
+    restart: unless-stopped
+    mem_limit: 256m
+    depends_on:
+      - tuwunel
+    volumes:
+      - ./mautrix-telegram:/data
+
+  mautrix-signal:
+    image: dock.mau.dev/mautrix/signal@sha256:5e6e8f4a9b840e71484e330538a73994a8b31bc11a10054ef662971019bc2d2f  # v0.2611.0 (2026-11-18; was v26.10 7b515bcaa9d825951bed92daeec08493172880a071e78c155a216fbd5141b79b)
+    container_name: mautrix-signal
+    restart: unless-stopped
+    mem_limit: 256m
+    depends_on:
+      - tuwunel
+    volumes:
+      - ./mautrix-signal:/data
+
+  mautrix-imessage:
+    image: home/mautrix-imessage:300ba6d-ignorechats  # local build 2026-11-15, image 9dce078861ad: upstream ac5014db + ignore-chats patch (~/build/mautrix-imessage-home)
+    container_name: mautrix-imessage
+    restart: unless-stopped
+    mem_limit: 768m   # was 384m; raised 2026-11-14 after OOM loop during startup sync
+    depends_on:
+      - tuwunel
+    volumes:
+      - ./mautrix-imessage:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"

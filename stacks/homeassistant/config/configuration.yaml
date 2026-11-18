@@ -1,0 +1,36 @@
+
+# Loads default set of integrations. Do not remove.
+default_config:
+
+# Load frontend themes from the themes folder
+frontend:
+  themes: !include_dir_merge_named themes
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+# Matrix chat (Phase 5) - posts notifications into the Home room on the home server
+matrix:
+  homeserver: http://127.0.0.1:6167
+  username: "@ha:home.example.ts.net"
+  password: "<SECRET password>"
+  rooms:
+    - "#home:home.example.ts.net"
+  commands:
+    # Phase 5 (2026-11-15, bot-policy.md): every text message in the Home room -> event for the Assist automation
+    - expression: "(?P<text>.+)"
+      name: assist
+
+notify:
+  - name: matrix
+    platform: matrix
+    default_room: "#home:home.example.ts.net"
+
+# Phase 5 alerts (2026-11-15, bot-policy.md): normal bot messages sent today (cap 10)
+counter:
+  bot_messages_today:
+    name: Bot messages today
+    initial: 0
+    step: 1
+    restore: true

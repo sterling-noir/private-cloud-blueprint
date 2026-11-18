@@ -1,0 +1,14 @@
+id: imessage
+url: http://mautrix-imessage:29330
+as_token: "<SECRET as_token>"
+hs_token: "<SECRET hs_token>"
+sender_localpart: <REDACTED>
+rate_limited: false
+namespaces:
+    users:
+        - regex: ^@imessagebot:home\.example\.ts\.net$
+          exclusive: true
+        - regex: ^@imessage_.*:home\.example\.ts\.net$
+          exclusive: true
+de.sorunome.msc2409.push_ephemeral: true
+push_ephemeral: true

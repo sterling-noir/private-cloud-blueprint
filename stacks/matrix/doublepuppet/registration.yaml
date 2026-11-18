@@ -1,0 +1,10 @@
+id: doublepuppet
+url: null
+as_token: "<SECRET as_token>"
+hs_token: "<SECRET hs_token>"
+sender_localpart: ff8b256e6e52958d
+rate_limited: false
+namespaces:
+  users:
+  - regex: '@.*:home\.example\.ts\.net'
+    exclusive: false

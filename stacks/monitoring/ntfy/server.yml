@@ -1,0 +1,22 @@
+# ntfy server config (Phase 8a). Reached by the iPhone at https://home.example.ts.net:8443
+# through `tailscale serve` (tailnet only). Login required for everything.
+base-url: "https://home.example.ts.net:8443"
+listen-http: ":80"
+behind-proxy: true
+
+cache-file: "/var/lib/ntfy/cache.db"
+cache-duration: "72h"
+
+auth-file: "<SECRET auth-file>"
+auth-default-access: "<SECRET auth-default-access>"
+enable-signup: false
+enable-login: true
+
+# No attachments, no e-mail, no web push: plain text alerts only.
+web-root: "/"
+
+# iPhone instant delivery (Apple only lets ntfy.sh's app wake up via Apple's push service).
+# When set, each new message makes this server send ntfy.sh a "poll request" that contains only
+# a message ID and a hashed topic name - never the text. The phone then fetches the text from
+# this server over Tailscale. Owner agreed 2026-11-14 (see server-status.md, Phase 8a). Undo: comment out the next line.
+upstream-base-url: "https://ntfy.sh"

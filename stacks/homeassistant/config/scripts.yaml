@@ -1,0 +1,27 @@
+bot_notify:
+  alias: "Bot: message the Home room (policy caps)"
+  description: "bot-policy.md: urgent always goes; normal only 7:00-22:59 and max 10 a day."
+  mode: queued
+  max: 20
+  fields:
+    message:
+      description: Text to send
+    urgent:
+      description: true = ignore cap and quiet hours
+  sequence:
+    - if:
+        - condition: template
+          value_template: "{{ urgent | default(false) | bool }}"
+      then:
+        - action: notify.matrix
+          data:
+            message: "⚠️ {{ message }}"
+      else:
+        - condition: template
+          value_template: "{{ states('counter.bot_messages_today') | int(0) < 10 and 7 <= now().hour < 23 }}"
+        - action: counter.increment
+          target:
+            entity_id: counter.bot_messages_today
+        - action: notify.matrix
+          data:
+            message: "{{ message }}"

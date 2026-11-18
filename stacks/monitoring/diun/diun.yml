@@ -1,0 +1,28 @@
+# Diun (Phase 8a): notify-only. Once a day it asks the registries whether a new version of the
+# images in images.yml exists and posts a short note to ntfy. It never updates anything.
+# Home Assistant is not listed: ~/bin/ha-update.sh updates it and reports on its own.
+db:
+  path: /data/diun.db
+
+watch:
+  workers: 2
+  schedule: "0 14 * * *"     # 14:00 UTC daily (9-10 a.m. Yourcity), well away from the 08:00 UTC backup
+  jitter: 60s
+  firstCheckNotif: false     # the first run only records what exists today
+  runOnStartup: true
+
+notif:
+  ntfy:
+    endpoint: http://ntfy:80
+    # topic comes from DIUN_NOTIF_NTFY_TOPIC (~/.config/monitoring/diun.env)
+    tokenFile: "<SECRET tokenFile>"
+    priority: 2
+    tags: ["package"]
+    timeout: 10s
+    templateTitle: "Update available: {{ .Entry.Image.Path }}"
+    templateBody: |
+      {{ .Entry.Image }} is out. Nothing to do now: the bridges and the Matrix server are updated by hand once a month - mention it to Claude at the next monthly update.
+
+providers:
+  file:
+    filename: /etc/diun/images.yml

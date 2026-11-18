@@ -1,0 +1,92 @@
+# Phase 8a monitoring stack (2026-11-14). Lives on the server as ~/monitoring/compose.yml.
+# Edit the copy in the Mac's project folder, then scp it over and `docker compose up -d`.
+#
+#   ntfy          push notifications to Owner's iPhone (self-hosted, login required)
+#   uptime-kuma   checks every minute that the Matrix server, bridges, Home Assistant and
+#                 the Mac's iMessage relay answer; sends sentences with the next step to ntfy
+#   docker-proxy  lets Uptime Kuma *read* container status without getting the Docker socket
+#   diun          once a day, posts to ntfy when a new version of a watched image exists
+#
+# Nothing here is reachable from the house Wi-Fi: ports are bound to 127.0.0.1 and published
+# to the tailnet only through `tailscale serve` (ntfy :8443, Uptime Kuma :3001).
+# Images pinned by digest (never :latest). Secrets live in ~/.config/monitoring (mode 600).
+#
+# Undo: docker compose -f ~/monitoring/compose.yml down   (data stays in ~/monitoring/*/data)
+name: monitoring
+
+x-logging: &logging
+  driver: json-file
+  options: {max-size: 5m, max-file: "3"}
+
+services:
+  ntfy:
+    image: binwiederhier/ntfy@sha256:1875ddcf815c8a3c981d6d78c67a93452d0abba79b1ab9520b1f5f5238902bd7  # v2.37.2
+    container_name: ntfy
+    command: serve
+    restart: unless-stopped
+    mem_limit: 128m
+    environment:
+      TZ: America/New_York
+    volumes:
+      - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
+      - ./ntfy/data:/var/lib/ntfy
+    ports:
+      - "127.0.0.1:2586:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 5 -O - http://localhost:80/v1/health | grep -q true"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    logging: *logging
+
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459  # v0.5.0
+    container_name: docker-proxy
+    restart: unless-stopped
+    mem_limit: 64m
+    environment:
+      CONTAINERS: 1   # GET /containers/... only
+      POST: 0         # read-only: no start/stop/exec
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    ports:
+      - "127.0.0.1:2375:2375"   # read-only Docker API for Uptime Kuma, this machine only
+    logging: *logging
+
+  uptime-kuma:
+    image: louislam/uptime-kuma@sha256:3c3a54a7338a41129163d933295076424e51b07f861a4cdf96a68b50bdde7a73  # 2.5.11-slim
+    container_name: uptime-kuma
+    restart: unless-stopped
+    mem_limit: 384m
+    # Host network so it can test the real Tailscale address (tailscale serve answers only on
+    # tailscale0, not to containers). It listens on 127.0.0.1 only.
+    network_mode: host
+    environment:
+      TZ: America/New_York
+      UPTIME_KUMA_DB_TYPE: sqlite
+      UPTIME_KUMA_HOST: 127.0.0.1
+      UPTIME_KUMA_PORT: "3001"
+    volumes:
+      - ./kuma/data:/app/data
+    depends_on: [ntfy, docker-proxy]
+    logging: *logging
+
+  diun:
+    image: crazymax/diun@sha256:8cc638b4c54e8a0c47898a51b20dae73037ad43310168b5da543a311dc668f77  # 4.33.1
+    container_name: diun
+    command: serve
+    restart: unless-stopped
+    mem_limit: 128m
+    environment:
+      TZ: America/New_York
+      LOG_LEVEL: info
+      DIUN_CONFIG: /etc/diun/diun.yml
+    env_file: ${HOME}/.config/monitoring/diun.env   # DIUN_NOTIF_NTFY_TOPIC
+    volumes:
+      - ./diun/diun.yml:/etc/diun/diun.yml:ro
+      - ./diun/images.yml:/etc/diun/images.yml:ro
+      - ./diun/data:/data
+      - ${HOME}/.config/monitoring/ntfy-token:/run/secrets/ntfy_token:ro
+    depends_on: [ntfy]
+    logging: *logging
+
