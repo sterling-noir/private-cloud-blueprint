@@ -20,7 +20,7 @@ x-logging: &logging
 
 services:
   ntfy:
-    image: binwiederhier/ntfy@sha256:1875ddcf815c8a3c981d6d78c67a93452d0abba79b1ab9520b1f5f5238902bd7  # v2.37.2
+    image: binwiederhier/ntfy@sha256:038da2be5e668fee6d36a62884eea48975e1b71c29a56964e5298c1b9165a573  # v2.38.1 (2026-11-19; was 1875ddcf815c8a3c981d6d78c67a93452d0abba79b1ab9520b1f5f5238902bd7)
     container_name: ntfy
     command: serve
     restart: unless-stopped
@@ -54,7 +54,7 @@ services:
     logging: *logging
 
   uptime-kuma:
-    image: louislam/uptime-kuma@sha256:3c3a54a7338a41129163d933295076424e51b07f861a4cdf96a68b50bdde7a73  # 2.5.11-slim
+    image: louislam/uptime-kuma@sha256:f2a9bc853deb2a6f37df229649f96d62efc3cb24e38b08eee79234f76613d063  # 2.5.12-slim (2026-11-19; was 3c3a54a7338a41129163d933295076424e51b07f861a4cdf96a68b50bdde7a73)
     container_name: uptime-kuma
     restart: unless-stopped
     mem_limit: 384m
