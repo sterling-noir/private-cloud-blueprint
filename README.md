@@ -3,8 +3,6 @@
 A working home server for people who want their messages, home and files on a box they own.
 Published by Sterling Management.
 
-> Draft. Not published yet.
-
 ## What it does
 - **One private inbox.** A Matrix server (Tuwunel) with bridges for Telegram, Signal and iMessage. It talks to no other Matrix servers and is reachable only over Tailscale.
 - **Chat with your house.** Home Assistant takes plain-language commands from one chat room, on an allowlist of devices, with a daily cap on bot messages and quiet hours.
