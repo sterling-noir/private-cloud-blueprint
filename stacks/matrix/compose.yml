@@ -39,7 +39,7 @@ services:
       - ./mautrix-signal:/data
 
   mautrix-imessage:
-    image: home/mautrix-imessage:300ba6d-ignorechats  # local build 2026-11-15, image 9dce078861ad: upstream ac5014db + ignore-chats patch (~/build/mautrix-imessage-home)
+    image: home/mautrix-imessage:300ba6d-ignorechats2  # local build 2026-11-19, image 19f181f3ebcf: upstream ac5014db + ignore-chats patch, list fails closed (~/build/mautrix-imessage-home); previous: 300ba6d-ignorechats (9dce078861ad)
     container_name: mautrix-imessage
     restart: unless-stopped
     mem_limit: 768m   # was 384m; raised 2026-11-14 after OOM loop during startup sync

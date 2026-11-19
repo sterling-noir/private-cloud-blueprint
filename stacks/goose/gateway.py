@@ -1,7 +1,7 @@
 """Goose read-only gateway (Phase 5b, 2026-11-15; rules: bot-policy.md section 5).
 
 Runs on the server. Holds the Matrix tokens; the Mac only gets a gateway key.
-- Read-only access to allowlisted chats (spaces Family & Home, Friends, Work, Unsorted; never the
+- Read-only access to allowlisted chats (spaces Family & Home, Friends, Unsorted; never Work or the
   Private space; never rooms named Example-name; plus ~/goose/deny.txt room IDs).
 - Goose can only *propose* replies: POST /draft puts a draft in the Drafts room (as @goose).
 - A draft is sent, as Owner, only when @owner reacts with a check mark on it in the Drafts room;
@@ -112,20 +112,45 @@ def saved_contact(name):
     return all(p and re.search(r'[A-Za-z]', p) and '@' not in p for p in parts)
 
 
-def allowlist():
-    with lock:
-        if time.time() - _allow['t'] < 300:
-            return _allow['rooms']
-    joined = set(mx('GET', '/_matrix/client/v3/joined_rooms').get('joined_rooms', []))
+class MxFail(Exception):
+    """A Matrix lookup needed for the allowlist failed."""
+
+
+def mxs(path, missing_ok=False):
+    """Strict GET for the allowlist: an error raises, so a failed lookup can never read as 'not blocked'."""
+    r = mx('GET', path)
+    if isinstance(r, dict) and '_err' in r:
+        if missing_ok and r['_err'] == 404:
+            return {}
+        raise MxFail(str(r['_err']))
+    return r
+
+
+def room_name_strict(rid):
+    """Like room_name(), but raises on errors and returns '' (never the room ID) when there is no name."""
+    n = mxs(f'/_matrix/client/v3/rooms/{Q(rid)}/state/m.room.name', missing_ok=True).get('name')
+    if n:
+        return n
+    mem = mxs(f'/_matrix/client/v3/rooms/{Q(rid)}/joined_members').get('joined', {})
+    others = [v.get('display_name') or k for k, v in mem.items() if k != ME and not re.match(r'@\w*bot:', k)]
+    if len(others) > 1:
+        return 'Group: ' + ', '.join(o for o in others if o)[:80]
+    return ', '.join(o for o in others if o)[:80]
+
+
+def build_allowlist():
+    joined = set(mxs('/_matrix/client/v3/joined_rooms').get('joined_rooms', []))
     allow, deny = {}, set(deny_ids())
     spaces = []
     for rid in joined:
-        c = mx('GET', f'/_matrix/client/v3/rooms/{Q(rid)}/state/m.room.create')
+        c = mxs(f'/_matrix/client/v3/rooms/{Q(rid)}/state/m.room.create')
         if c.get('type') == 'm.space':
-            spaces.append((rid, (mx('GET', f'/_matrix/client/v3/rooms/{Q(rid)}/state/m.room.name').get('name') or '').strip()))
+            spaces.append((rid, (mxs(f'/_matrix/client/v3/rooms/{Q(rid)}/state/m.room.name', missing_ok=True).get('name') or '').strip()))
     def children(sid):
-        st = mx('GET', f'/_matrix/client/v3/rooms/{Q(sid)}/state')
-        return [e['state_key'] for e in st if isinstance(e, dict) and e.get('type') == 'm.space.child' and e.get('content', {}).get('via')] if isinstance(st, list) else []
+        st = mxs(f'/_matrix/client/v3/rooms/{Q(sid)}/state')
+        if not isinstance(st, list):
+            raise MxFail('state is not a list')
+        return [e['state_key'] for e in st if isinstance(e, dict) and e.get('type') == 'm.space.child' and e.get('content', {}).get('via')]
     for sid, sname in spaces:
         if sname.lower() in DENY_SPACES:
             deny |= set(children(sid))
@@ -137,17 +162,36 @@ def allowlist():
                 allow[rid] = {'space': sname}
     out = {}
     for rid, v in allow.items():
-        name = room_name(rid)
+        name = room_name_strict(rid)
+        if not name:
+            continue  # a chat that cannot be named cannot be checked against the rules: leave it out
         if DENY_NAME.search(name):
             continue
         if v['space'].lower() == 'unsorted' and not saved_contact(name):
-            continue  # 2026-11-15 (Owner): in Unsorted only saved, named contacts; unknown numbers/emails blocked
-        mem = list(mx('GET', f'/_matrix/client/v3/rooms/{Q(rid)}/joined_members').get('joined', {}).keys())
+            continue  # in Unsorted only saved, named contacts; unknown numbers/emails blocked
+        mem = list(mxs(f'/_matrix/client/v3/rooms/{Q(rid)}/joined_members').get('joined', {}).keys())
         if any(m in mem for m in ('@ha:' + DOM, BOT)):
             continue  # bot rooms (Home, Goose, Drafts) are not inbox chats
         out[rid] = {'id': rid, 'name': name, 'space': v['space'], 'network': network(rid, mem)}
+    return out
+
+
+def allowlist():
     with lock:
-        _allow.update(t=time.time(), rooms=out)
+        if time.time() - _allow['t'] < 300:
+            return _allow['rooms']
+    try:
+        out = build_allowlist()
+    except Exception as e:  # fail closed: never treat a failed lookup as "allowed"
+        with lock:
+            if time.time() - _allow.get('good', 0) > 1800:
+                _allow['rooms'] = {}          # last good list is too old: allow nothing
+            _allow['t'] = time.time() - 240   # try again in a minute
+            rooms = _allow['rooms']
+        log('allowlist rebuild FAILED:', type(e).__name__, '- serving', len(rooms), 'rooms from the last good list')
+        return rooms
+    with lock:
+        _allow.update(t=time.time(), good=time.time(), rooms=out)
     log('allowlist rebuilt:', len(out), 'rooms')
     return out
 
