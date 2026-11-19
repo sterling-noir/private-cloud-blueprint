@@ -96,6 +96,14 @@ def unsorted_ok():
         return set()
 
 
+def extra_ok():
+    """Room ids opted in one by one although they are in no allowed space. No file means none."""
+    try:
+        return {l.split()[0] for l in open(os.path.join(D, 'extra-allow.txt')) if l.strip() and not l.startswith('#')}
+    except FileNotFoundError:
+        return set()
+
+
 # ---------- allowlist ----------
 _allow = {'t': 0, 'rooms': {}}
 
@@ -181,6 +189,9 @@ def build_allowlist():
         for rid in children(sid):
             if rid in joined and rid not in deny and rid not in ROOMS.values():
                 allow[rid] = {'space': sname}
+    for rid in extra_ok():  # single chats opted in by id; the deny rules above and below still apply
+        if rid in joined and rid not in deny and rid not in ROOMS.values() and rid not in allow and rid not in dict(spaces):
+            allow[rid] = {'space': 'Opted in'}
     out = {}
     opted_in = unsorted_ok()
     for rid, v in allow.items():
