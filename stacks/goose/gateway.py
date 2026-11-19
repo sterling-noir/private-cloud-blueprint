@@ -75,6 +75,27 @@ def save_state(s):
 
 state = load_state()
 
+# ---------- names and bots ----------
+BOTS = {BOT} | {f'@{n}:{DOM}' for n in ('ha', 'imessagebot', 'signalbot', 'telegrambot')}  # exact ids, this server only
+DRAFT_TTL = 24 * 3600
+
+
+def clean_name(s, n=60):
+    """Names are written by other people: no control or invisible characters, no newlines, and never
+    the owner's own "(me)" label."""
+    s = re.sub(r'[\x00-\x1f\x7f\u2028\u2029\u200b-\u200f\u202a-\u202e\u2066-\u2069]', ' ', str(s or ''))
+    s = re.sub(r'\(\s*me\s*\)', '(not me)', re.sub(r'\s+', ' ', s).strip(), flags=re.I)
+    return s[:n]
+
+
+def unsorted_ok():
+    """Room ids in the Unsorted space that were explicitly opted in. No file means none."""
+    try:
+        return {l.split()[0] for l in open(os.path.join(D, 'unsorted-allow.txt')) if l.strip() and not l.startswith('#')}
+    except FileNotFoundError:
+        return set()
+
+
 # ---------- allowlist ----------
 _allow = {'t': 0, 'rooms': {}}
 
@@ -91,7 +112,7 @@ def room_name(rid):
     if n:
         return n
     mem = mx('GET', f'/_matrix/client/v3/rooms/{Q(rid)}/joined_members').get('joined', {})
-    others = [v.get('display_name') or k for k, v in mem.items() if k != ME and not re.match(r'@\w*bot:', k)]
+    others = [v.get('display_name') or k for k, v in mem.items() if k != ME and k not in BOTS]
     if len(others) > 1:
         return 'Group: ' + ', '.join(o for o in others if o)[:80]
     return ', '.join(o for o in others if o)[:80] or rid
@@ -100,7 +121,7 @@ def room_name(rid):
 def network(rid, members):
     for m in members:
         for p in ('telegram', 'signal', 'imessage'):
-            if m.startswith('@' + p + '_') or m.startswith('@' + p + 'bot'):
+            if m.endswith(':' + DOM) and (m.startswith('@' + p + '_') or m.startswith('@' + p + 'bot:')):
                 return {'imessage': 'iMessage', 'telegram': 'Telegram', 'signal': 'Signal'}[p]
     return 'Matrix'
 
@@ -132,7 +153,7 @@ def room_name_strict(rid):
     if n:
         return n
     mem = mxs(f'/_matrix/client/v3/rooms/{Q(rid)}/joined_members').get('joined', {})
-    others = [v.get('display_name') or k for k, v in mem.items() if k != ME and not re.match(r'@\w*bot:', k)]
+    others = [v.get('display_name') or k for k, v in mem.items() if k != ME and k not in BOTS]
     if len(others) > 1:
         return 'Group: ' + ', '.join(o for o in others if o)[:80]
     return ', '.join(o for o in others if o)[:80]
@@ -161,14 +182,15 @@ def build_allowlist():
             if rid in joined and rid not in deny and rid not in ROOMS.values():
                 allow[rid] = {'space': sname}
     out = {}
+    opted_in = unsorted_ok()
     for rid, v in allow.items():
-        name = room_name_strict(rid)
+        name = clean_name(room_name_strict(rid), 80)
         if not name:
             continue  # a chat that cannot be named cannot be checked against the rules: leave it out
         if DENY_NAME.search(name):
             continue
-        if v['space'].lower() == 'unsorted' and not saved_contact(name):
-            continue  # in Unsorted only saved, named contacts; unknown numbers/emails blocked
+        if v['space'].lower() == 'unsorted' and rid not in opted_in:
+            continue  # Unsorted is opt-in per chat (unsorted-allow.txt): new or unknown senders never reach the model
         mem = list(mxs(f'/_matrix/client/v3/rooms/{Q(rid)}/joined_members').get('joined', {}).keys())
         if any(m in mem for m in ('@ha:' + DOM, BOT)):
             continue  # bot rooms (Home, Goose, Drafts) are not inbox chats
@@ -208,7 +230,7 @@ def who(uid):
     if uid == ME:
         return 'Owner (me)'
     if uid not in _names:
-        _names[uid] = mx('GET', f'/_matrix/client/v3/profile/{Q(uid)}/displayname').get('displayname') or uid.split(':')[0][1:]
+        _names[uid] = clean_name(mx('GET', f'/_matrix/client/v3/profile/{Q(uid)}/displayname').get('displayname') or uid.split(':')[0][1:])
     return _names[uid]
 
 
@@ -259,22 +281,33 @@ def waiting(days=3):
 
 # ---------- drafts ----------
 def recipients(rid):
-    """Real addresses of everyone else in the chat (from bridge ghost IDs), so a check mark is an informed choice."""
-    mem = mx('GET', f'/_matrix/client/v3/rooms/{Q(rid)}/joined_members').get('joined', {})
+    """Everyone else who would get a message sent to this chat, as [(stable id, label)], joined and invited.
+    Raises if the member list cannot be read: a draft must never show a guessed or empty "GOES TO"."""
+    r = mx('GET', f'/_matrix/client/v3/rooms/{Q(rid)}/members')
+    if not isinstance(r, dict) or '_err' in r or not isinstance(r.get('chunk'), list):
+        raise MxFail('members')
     out = []
-    for uid, v in mem.items():
-        if uid == ME or re.match(r'@\w*bot:', uid):
+    for e in r['chunk']:
+        uid, c = e.get('state_key') or '', e.get('content') or {}
+        if c.get('membership') not in ('join', 'invite') or uid == ME or uid in BOTS:
             continue
         local = uid.split(':')[0][1:]
-        m = re.match(r'(imessage|signal|telegram)_(.+)', local)
+        m = re.match(r'(imessage|signal|telegram)_(.+)', local) if uid.endswith(':' + DOM) else None
         if m and m.group(1) == 'imessage':
             h = urllib.parse.unquote(m.group(2).replace('=', '%'))
-            if re.fullmatch(r'\+1\d{10}', h):
-                h = f'+1 {h[2:5]}-{h[5:8]}-{h[8:]}'
-            out.append(h)
+            label = f'+1 {h[2:5]}-{h[5:8]}-{h[8:]}' if re.fullmatch(r'\+1\d{10}', h) else clean_name(h)
         else:
-            out.append((v.get('display_name') or local) + (f' ({m.group(1).title()})' if m else ''))
-    return out or ['(nobody else in this chat)']
+            tail = re.sub(r'[^A-Za-z0-9]', '', m.group(2) if m else uid)[-4:]
+            label = f"{clean_name(c.get('displayname') or local)} ({m.group(1).title() if m else 'Matrix'}, id …{tail})"
+        out.append((uid, label + (' [invited]' if c.get('membership') == 'invite' else '')))
+    return sorted(out)
+
+
+def drafts_notice(msg, reply_to=None):
+    body = {'msgtype': 'm.notice', 'body': msg}
+    if reply_to:
+        body['m.relates_to'] = {'m.in_reply_to': {'event_id': reply_to}}
+    mx('PUT', f'/_matrix/client/v3/rooms/{Q(ROOMS["drafts"])}/send/m.room.message/n{int(time.time()*1000)}', body, tok=GT)
 
 
 def make_draft(rid, text):
@@ -283,6 +316,10 @@ def make_draft(rid, text):
     text = (text or '').strip()
     if not text or len(text) > 4000:
         return {'error': 'draft text empty or too long'}
+    try:
+        rec = recipients(rid)
+    except Exception:
+        return {'error': 'could not read who is in that chat, so no draft was made; try again in a minute'}
     now = time.time()
     with lock:
         state['drafts_sent_ts'] = [t for t in state.get('drafts_sent_ts', []) if now - t < 3600]
@@ -290,10 +327,11 @@ def make_draft(rid, text):
             return {'error': 'draft limit reached (20 per hour)'}
         state['drafts_sent_ts'].append(now); save_state(state)
     info = allowlist()[rid]
-    to = ', '.join(recipients(rid))
-    body = f'Draft for {info["name"]} ({info["network"]})\nGOES TO: {to}\n\n{text}\n\nCheck the GOES TO line. React ✅ to send as you, ❌ to discard.'
+    to = ', '.join(label for _, label in rec) or '(only you: nobody else is in this chat)'
+    body = (f'Draft for {info["name"]} ({info["network"]})\nGOES TO: {to}\n\n{text}\n\n'
+            'Check the GOES TO line. React ✅ to send as you, ❌ to discard. This draft expires in 24 hours.')
     r = mx('PUT', f'/_matrix/client/v3/rooms/{Q(ROOMS["drafts"])}/send/m.room.message/d{int(now*1000)}',
-           {'msgtype': 'm.text', 'body': body, 'home.goose.draft': {'room_id': rid, 'text': text}}, tok=GT)
+           {'msgtype': 'm.text', 'body': body, 'home.goose.draft': {'room_id': rid, 'text': text, 'to': [u for u, _ in rec]}}, tok=GT)
     log('draft created for', rid[:10])
     return {'ok': '_err' not in r, 'goes_to': to, 'note': 'Draft is waiting in the Drafts room. It is NOT sent until Owner reacts with a check mark. Tell him who it goes to.'}
 
@@ -310,15 +348,22 @@ def handle_reaction(ev):
         return
     if key in CHECK:
         rid = draft['room_id']
+        if time.time() - d.get('origin_server_ts', 0) / 1000 > DRAFT_TTL:
+            state['handled'].append('sent:' + target); save_state(state)
+            drafts_notice('Not sent: this draft is more than 24 hours old. Ask for a new one.', target); return
         if not ok_room(rid):
-            mx('PUT', f'/_matrix/client/v3/rooms/{Q(ROOMS["drafts"])}/send/m.room.message/n{int(time.time()*1000)}',
-               {'msgtype': 'm.notice', 'body': 'Not sent: that chat is no longer on the allowlist.'}, tok=GT); return
+            drafts_notice('Not sent: that chat is no longer on the allowlist.', target); return
+        try:
+            now_ids = [u for u, _ in recipients(rid)]
+        except Exception:
+            drafts_notice('Not sent: could not check who is in that chat right now. Remove your check mark and add it again in a minute.', target); return
+        if 'to' in draft and sorted(draft['to']) != now_ids:
+            state['handled'].append('sent:' + target); save_state(state)
+            drafts_notice('Not sent: the people in that chat changed after this draft was written. Ask for a new draft.', target); return
+        state['handled'].append('sent:' + target); save_state(state)  # recorded before sending: never send twice
         r = mx('PUT', f'/_matrix/client/v3/rooms/{Q(rid)}/send/m.room.message/g{int(time.time()*1000)}',
                {'msgtype': 'm.text', 'body': draft['text']})
-        state['handled'].append('sent:' + target); save_state(state)
-        msg = 'Sent ✓' if '_err' not in r else f'Sending failed ({r["_err"]}). Nothing was sent.'
-        mx('PUT', f'/_matrix/client/v3/rooms/{Q(ROOMS["drafts"])}/send/m.room.message/n{int(time.time()*1000)}',
-           {'msgtype': 'm.notice', 'body': msg, 'm.relates_to': {'m.in_reply_to': {'event_id': target}}}, tok=GT)
+        drafts_notice('Sent ✓' if '_err' not in r else f'Sending reported a problem ({r["_err"]}). Check the chat before asking for it again.', target)
         log('draft approved; send', 'ok' if '_err' not in r else 'failed', 'to', rid[:10])
     elif key in CROSS:
         state['handled'].append('sent:' + target); save_state(state)
