@@ -6,6 +6,9 @@ services:
     image: ghcr.io/matrix-construct/tuwunel@sha256:3dde1e9b3503c68218f95415ec3ebff522bd945065ba76019d408543540d1730  # 2.0.0 (was 1.9.4, see compose.yml.bak-pre2-*)
     container_name: tuwunel
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]   # hardening 2026-11-22 (review C5)
+    cap_drop: [ALL]
+    cap_add: [DAC_OVERRIDE]   # runs as root; its config and data folder belong to uid 1000
     ports:
       - "127.0.0.1:6167:6167"
     volumes:
@@ -22,6 +25,9 @@ services:
     image: dock.mau.dev/mautrix/telegram@sha256:fe78dbce96dca82f077371f429776ab1fee3b65ddc83924a257279b142160945  # v0.2611.0 (2026-11-18; was v26.10 0ab1d5b97256b1b6b3afb0318f6f4fcc9d524f0142433fc3806df9f4de17c8a1)
     container_name: mautrix-telegram
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]   # hardening 2026-11-22 (review C5)
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID]   # start script fixes /data ownership, then drops to uid 1337 with no capabilities
     mem_limit: 256m
     depends_on:
       - tuwunel
@@ -32,6 +38,9 @@ services:
     image: dock.mau.dev/mautrix/signal@sha256:5e6e8f4a9b840e71484e330538a73994a8b31bc11a10054ef662971019bc2d2f  # v0.2611.0 (2026-11-18; was v26.10 7b515bcaa9d825951bed92daeec08493172880a071e78c155a216fbd5141b79b)
     container_name: mautrix-signal
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]   # hardening 2026-11-22 (review C5)
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID]   # start script fixes /data ownership, then drops to uid 1337 with no capabilities
     mem_limit: 256m
     depends_on:
       - tuwunel
@@ -42,6 +51,9 @@ services:
     image: home/mautrix-imessage:300ba6d-ignorechats2  # local build 2026-11-19, image 19f181f3ebcf: upstream ac5014db + ignore-chats patch, list fails closed (~/build/mautrix-imessage-home); previous: 300ba6d-ignorechats (9dce078861ad)
     container_name: mautrix-imessage
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]   # hardening 2026-11-22 (review C5)
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID]   # start script fixes /data ownership, then drops to uid 1337 with no capabilities
     mem_limit: 768m   # was 384m; raised 2026-11-14 after OOM loop during startup sync
     depends_on:
       - tuwunel

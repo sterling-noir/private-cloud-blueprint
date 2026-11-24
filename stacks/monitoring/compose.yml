@@ -24,6 +24,11 @@ services:
     container_name: ntfy
     command: serve
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]   # hardening 2026-11-22 (review C5)
+    cap_drop: [ALL]
+    cap_add: [DAC_OVERRIDE]   # runs as root but its data folder belongs to uid 1000
+    read_only: true
+    tmpfs: [/tmp]
     mem_limit: 128m
     environment:
       TZ: America/New_York
@@ -43,12 +48,17 @@ services:
     image: tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459  # v0.5.0
     container_name: docker-proxy
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]   # hardening 2026-11-22 (review C5)
+    cap_drop: [ALL]
     mem_limit: 64m
     environment:
       CONTAINERS: 1   # GET /containers/... only
       POST: 0         # read-only: no start/stop/exec
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Our stricter rule file (status only, no logs). Made from the template inside image v0.5.0;
+      # if this image is ever updated, rebuild it from the new template (see security-review.md).
+      - ./docker-proxy/haproxy.cfg.template:/usr/local/etc/haproxy/haproxy.cfg.template:ro
     ports:
       - "127.0.0.1:2375:2375"   # read-only Docker API for Uptime Kuma, this machine only
     logging: *logging
@@ -57,6 +67,9 @@ services:
     image: louislam/uptime-kuma@sha256:f2a9bc853deb2a6f37df229649f96d62efc3cb24e38b08eee79234f76613d063  # 2.5.12-slim (2026-11-19; was 3c3a54a7338a41129163d933295076424e51b07f861a4cdf96a68b50bdde7a73)
     container_name: uptime-kuma
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]   # hardening 2026-11-22 (review C5)
+    cap_drop: [ALL]
+    cap_add: [DAC_OVERRIDE, SETUID, SETGID]   # database file belongs to uid 1000; SETUID/SETGID so its DNS cache helper (nscd) can start. Add NET_RAW here if a "ping" type check is ever added (none today).
     mem_limit: 384m
     # Host network so it can test the real Tailscale address (tailscale serve answers only on
     # tailscale0, not to containers). It listens on 127.0.0.1 only.
@@ -76,6 +89,11 @@ services:
     container_name: diun
     command: serve
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]   # hardening 2026-11-22 (review C5)
+    cap_drop: [ALL]
+    cap_add: [DAC_OVERRIDE]   # runs as root; reads the uid-1000 token file and data folder
+    read_only: true
+    tmpfs: [/tmp]
     mem_limit: 128m
     environment:
       TZ: America/New_York

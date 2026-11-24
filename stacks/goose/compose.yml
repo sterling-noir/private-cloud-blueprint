@@ -6,14 +6,21 @@ services:
     restart: unless-stopped
     network_mode: host          # reaches Tuwunel on 127.0.0.1:6167; listens only on the Tailscale IP
     user: "1000:1000"
+    # hardening 2026-11-22 (review C5, R11): no extra privileges, nothing writable except state/
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp]
     environment:
       BIND: 100.64.0.10
       PORT: "8787"
       GOOSE_DIR: /data
+      GOOSE_STATE_DIR: /state
       TZ: America/New_York
       PYTHONUNBUFFERED: "1"
     volumes:
-      - ./:/data
+      - ./:/data:ro            # code, tokens, allow/deny lists, this file: read-only
+      - ./state:/state         # state.json: the only thing it writes
       - ./gateway.py:/app/gateway.py:ro
     command: ["python3", "/app/gateway.py"]
     mem_limit: 128m

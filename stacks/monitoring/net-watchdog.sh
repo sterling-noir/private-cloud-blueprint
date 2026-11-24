@@ -27,7 +27,9 @@ ntfy() {
   local body
   body=$(jq -nc --arg t "$(cat "$CFG/topic")" --arg ti "$1" --arg m "$2" \
     '{topic:$t,title:$ti,message:$m,priority:3,tags:["electric_plug"]}')
-  curl -fsS -m 10 -o /dev/null -H "Authorization: Bearer $(cat "$CFG/ntfy-token")" \
+  # The token goes to curl through a file descriptor (-H @file), never on its command line,
+  # so it cannot be seen in the process list.
+  curl -fsS -m 10 -o /dev/null -H @<(printf 'Authorization: Bearer %s\n' "$(<"$CFG/ntfy-token")") \
     -H "Content-Type: application/json" -d "$body" http://127.0.0.1:2586/ || true
 }
 

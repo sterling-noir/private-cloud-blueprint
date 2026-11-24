@@ -34,7 +34,9 @@ KEYF = os.path.join(D, 'gateway.key')
 if not os.path.exists(KEYF):
     fd = os.open(KEYF, os.O_WRONLY | os.O_CREAT, 0o600); os.write(fd, secrets.token_urlsafe(32).encode()); os.close(fd)
 KEY = rd('gateway.key')
-STATE = os.path.join(D, 'state.json')
+# state.json is the only file the gateway writes. GOOSE_STATE_DIR lets it live in its own folder so
+# everything else (code, tokens, allow/deny lists) can be mounted read-only.
+STATE = os.path.join(os.environ.get('GOOSE_STATE_DIR', D), 'state.json')
 Q = lambda s: urllib.parse.quote(s, safe='')
 lock = threading.Lock()
 

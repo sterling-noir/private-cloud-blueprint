@@ -7,6 +7,10 @@ A stored file is "unused" when ALL of these hold:
     cross-checked 2026-11-14 against a full scan of every message: it misses nothing),
   - it is not anyone's profile picture or a room/space picture (those are in no message, but are in use),
   - it was stored more than 2 days ago (so a brand-new upload is never caught before its message lands).
+Safety rules (security review R4, 2026-11-24): any lookup that fails stops the run instead of being
+read as "not in use"; rooms Owner is not in are checked too; and if a room is encrypted, files
+uploaded by anyone in that room are never listed (the server cannot see which files an encrypted
+message uses).
 Nothing here runs on a schedule. Nothing is deleted unless Owner finishes a review batch.
 
 Usage (as homelab, token in ~/.element-nightly-token):
@@ -16,7 +20,7 @@ Usage (as homelab, token in ~/.element-nightly-token):
 """
 import json, os, re, sys, time, shutil, mimetypes, urllib.request, urllib.parse, datetime
 
-HS = "http://127.0.0.1:6167"
+HS = os.environ.get("ELEMENT_HS", "http://127.0.0.1:6167")   # override is for the test only
 SRV = "home.example.ts.net"
 ME = "@owner:" + SRV
 MIN_AGE_MS = 2 * 86400 * 1000
@@ -63,10 +67,15 @@ def inventory():
     if req("GET", "<REDACTED>").get("user_id") != ME:
         die("token not accepted - rerun element-cleanup-token.sh")
     # every stored local file, per uploader
-    stats = req("GET", "<REDACTED>", limit="1000")
-    if "_err" in stats: die("cannot list media:", stats)
+    uploaders, frm = [], 0
+    while True:
+        stats = req("GET", "<REDACTED>", limit="1000", **{"from": str(frm)})
+        if "_err" in stats: die("cannot list media:", stats)
+        uploaders += stats.get("users", [])
+        if not stats.get("next_token") or not stats.get("users"): break
+        frm = stats["next_token"]
     allm = {}
-    for u in stats.get("users", []):
+    for u in uploaders:
         frm = 0
         while True:
             r = req("GET", f"/_synapse/admin/v1/users/{Q(u['user_id'])}/media", limit="500", **{"from": str(frm)})
@@ -75,30 +84,52 @@ def inventory():
             if not r.get("next_token") or not r.get("media"): break
             frm = r["next_token"]
     # files referenced by any event in any room on the server
-    used, rooms, frm = set(), [], None
+    used, rooms, frm = set(), {}, None
     while True:
         r = req("GET", "/_synapse/admin/v1/rooms", limit="500", **({"from": str(frm)} if frm else {}))
         if "_err" in r: die("cannot list rooms:", r)
-        rooms += [x["room_id"] for x in r.get("rooms", [])]
+        rooms.update((x["room_id"], x) for x in r.get("rooms", []))
         frm = r.get("next_batch")
         if not frm: break
     for rid in rooms:
         r = req("GET", f"/_synapse/admin/v1/room/{Q(rid)}/media")
         if "_err" in r: die("cannot list media of room", rid, r)   # never guess: stop instead
         used.update(x.split("/")[-1] for x in r.get("local", []) + r.get("remote", []))
-    # pictures: room/space/member avatars in room state, plus every user's profile picture
+    # pictures: room/space/member avatars in room state, plus every user's profile picture.
+    # Room state comes from one sync for the rooms Owner is in, and from the admin API for any other
+    # room on the server (so a picture set in a room he is not in still counts as in use).
     flt = json.dumps({"room": {"timeline": {"limit": 1}, "state": {"lazy_load_members": False}}, "presence": {"types": []}})
     s = req("GET", "/_matrix/client/v3/sync", filter=flt, full_state="true", timeout="0")
     if "_err" in s: die("sync failed:", s)
+    state = {rid: r.get("state", {}).get("events", []) for rid, r in s.get("rooms", {}).get("join", {}).items()}
+    for rid, r in s.get("rooms", {}).get("invite", {}).items():
+        state.setdefault(rid, r.get("invite_state", {}).get("events", []))
+    for rid in rooms:
+        if rid not in s.get("rooms", {}).get("join", {}):
+            r = req("GET", f"/_synapse/admin/v1/rooms/{Q(rid)}/state")
+            if "_err" in r or not isinstance(r.get("state"), list): die("cannot read state of room", rid, r)
+            state[rid] = state.get(rid, []) + r["state"]
     users = {m["user_id"] for m in allm.values()}
-    for r in s.get("rooms", {}).get("join", {}).values():
-        st = r.get("state", {}).get("events", [])
+    cannot_judge = set()   # everyone who is or was in an encrypted room
+    for rid, st in state.items():
         used.update(MXC.findall(json.dumps(st)))
-        users.update(e["state_key"] for e in st if e["type"] == "m.room.member")
+        members = {e["state_key"] for e in st if e.get("type") == "m.room.member" and e.get("state_key")}
+        users.update(members)
+        if (rooms.get(rid) or {}).get("encryption") or any(e.get("type") == "m.room.encryption" for e in st):
+            cannot_judge.update(members)
     for u in users:
-        used.update(MXC.findall(json.dumps(req("GET", f"/_matrix/client/v3/profile/{Q(u)}"))))
+        p = req("GET", f"/_matrix/client/v3/profile/{Q(u)}")
+        if "_err" in p:
+            if p["_err"] == 404 and "M_NOT_FOUND" in p.get("_body", ""): continue   # no profile, so no picture
+            die("cannot read the profile of", u, p)                                  # never guess: stop instead
+        used.update(MXC.findall(json.dumps(p)))
     cutoff = int(time.time() * 1000) - MIN_AGE_MS
-    unused = {k for k, m in allm.items() if k not in used and m.get("created_ts", 0) < cutoff}
+    unused = {k for k, m in allm.items() if k not in used and m.get("user_id") not in cannot_judge
+              and isinstance(m.get("created_ts"), int) and m["created_ts"] < cutoff}
+    if cannot_judge:
+        held = sum(1 for k, m in allm.items() if k not in used and m.get("user_id") in cannot_judge)
+        print(f"note: an encrypted room exists; {held} file(s) from people in it are left alone "
+              "(the server cannot tell whether an encrypted message still uses them)", file=sys.stderr)
     return allm, unused
 
 

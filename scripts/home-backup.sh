@@ -22,6 +22,11 @@ ENV_FILE="$HOME/.config/restic/home.env"
 LOG_DIR="$HOME/backup-logs"
 MATRIX_COMPOSE="$HOME/matrix/compose.yml"
 HA_COMPOSE="$<REDACTED>.yml"
+# Helper image that runs restic as root. Pinned by digest (2026-11-21) so a changed "latest" can
+# never run with the backup secrets. To move to a newer alpine on purpose: docker pull alpine:latest;
+# docker image inspect alpine:latest --format '{{index .RepoDigests 0}}' and put the new value
+# here and in ~/bin/ha-update.sh.
+ALPINE=alpine@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/$(date -u +%F).log"
@@ -51,10 +56,11 @@ trap start_all EXIT   # containers come back up whatever happens below
 # The bridges' config files belong to uid 1337 and Home Assistant's .storage to root, so the
 # backup itself runs as root inside a throwaway alpine container (same ~/bin/restic binary,
 # data mounted read-only at the same paths, so snapshot paths match the host).
+# The keys are NOT passed with -e (that would show them in `docker inspect`, review R6): the
+# container reads them itself from the env file, which it sees through the read-only ~/.config mount.
 restic_as_root() {
   mkdir -p "$HOME/.cache/restic-root"
   docker run --rm --hostname "$(hostname)" \
-    -e B2_ACCOUNT_ID -e B2_ACCOUNT_KEY -e RESTIC_REPOSITORY -e RESTIC_PASSWORD \
     -e RESTIC_CACHE_DIR=/cache \
     -v "$HOME/bin/restic:/usr/local/bin/restic:ro" \
     -v "$HOME/.cache/restic-root:/cache" \
@@ -66,7 +72,7 @@ restic_as_root() {
     -v "$HOME/monitoring:$HOME/monitoring:ro" \
     -v "$HOME/vault:$HOME/vault:ro" \
     -v "$HOME/.config:$HOME/.config:ro" \
-    alpine:latest restic "$@"
+    "$ALPINE" sh -c 'set -a; . "$0"; set +a; exec restic "$@"' "$ENV_FILE" "$@"
 }
 
 restic_as_root backup \

@@ -21,6 +21,7 @@
 #   compose.yml.bak-ha-update-* over compose.yml and `docker compose up -d` in ~/homeassistant-compose.
 set -uo pipefail
 export PATH="$HOME/bin:/usr/local/bin:/usr/bin:/bin"
+umask 077   # logs, state files and backup copies are owner-only from the moment they are created
 
 SOAK_DAYS=2
 <REDACTED>
@@ -32,6 +33,11 @@ BACKUPS="$HOME/ha-update-backups"
 STATE="$HOME/.local/state/ha-update"
 LOG_DIR="$HOME/ha-update-logs"
 CFG="$HOME/.config/monitoring"
+# Helper image that runs as root for the backup/rollback steps. Pinned by digest (2026-11-21) so a
+# changed "latest" can never run with the backup secrets. To move to a newer alpine on purpose:
+# docker pull alpine:latest; docker image inspect alpine:latest --format '{{index .RepoDigests 0}}'
+# and put the new value here and in ~/bin/home-backup.sh.
+ALPINE=alpine@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 DRY=0; NOW=0; TEST_RB=0
 for a in "$@"; do case $a in
@@ -54,7 +60,9 @@ ntfy() {  # title message priority tag
   local body
   body=$(jq -nc --arg t "$(cat "$CFG/topic")" --arg ti "$1" --arg m "$2" --argjson p "$3" --arg tag "$4" \
     '{topic:$t,title:$ti,message:$m,priority:$p,tags:[$tag]}')
-  curl -fsS -m 10 -o /dev/null -H "Authorization: Bearer $(cat "$CFG/ntfy-token")" \
+  # The token goes to curl through a file descriptor (-H @file), never on its command line,
+  # so it cannot be seen in the process list.
+  curl -fsS -m 10 -o /dev/null -H @<(printf 'Authorization: Bearer %s\n' "$(<"$CFG/ntfy-token")") \
     -H "Content-Type: application/json" -d "$body" http://127.0.0.1:2586/ || echo "!! ntfy send failed"
 }
 
@@ -67,7 +75,7 @@ ACC="Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.dist
 tok=$(curl -fsS -m 20 "https://ghcr.io/token?scope=repository:$REPO:pull" | jq -r .token)
 reg() { curl -fsS -m 30 -H "Authorization: Bearer $tok" -H "$ACC" "$@"; }
 new=$(reg -I "https://ghcr.io/v2/$REPO/manifests/stable" | tr -d '\r' | awk 'tolower($1)=="docker-content-digest:" {print $2}')
-[ -n "$new" ] || { echo "!! could not read the stable digest from ghcr.io"; exit 1; }
+[[ $new =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "!! could not read the stable digest from ghcr.io"; exit 1; }
 md=$(reg "https://ghcr.io/v2/$REPO/manifests/$new" | jq -r '.manifests[] | select(.platform.architecture=="amd64" and .platform.os=="linux") | .digest' | head -1)
 cfgd=$(reg "https://ghcr.io/v2/$REPO/manifests/$md" | jq -r .config.digest)
 new_ver=$(reg -L "https://ghcr.io/v2/$REPO/blobs/$cfgd" | jq -r '.config.Labels["org.opencontainers.image.version"] // "?"')
@@ -81,6 +89,14 @@ elif [ "$new" = "$cur" ]; then
 fi
 if [ $TEST_RB = 0 ] && grep -qx "$new" "$STATE/bad-digests" 2>/dev/null; then
   echo "stable $new_ver failed before and was rolled back; waiting for the next release"; exit 0
+fi
+
+# The version text comes from the registry and is later written into compose.yml and used in a
+# file name, so accept digits and dots only (e.g. 2026.11.2). Anything else: stop, change nothing.
+if ! [[ $new_ver =~ ^[0-9.]+$ ]]; then
+  printf '!! unexpected version text from the registry: %q - not updating\n' "$new_ver"
+  ntfy "Home Assistant update skipped" "The new release has an unexpected version name, so nothing was changed. Home Assistant keeps running $cur_ver. Mention it to Claude." 2 warning
+  exit 1
 fi
 
 # --- waiting period: let a new release be out SOAK_DAYS days before installing it -------------
@@ -107,26 +123,31 @@ echo "-- pulling $IMAGE@$new"
 docker pull -q "$IMAGE@$new" >/dev/null || { ntfy "Home Assistant update skipped" "Could not download Home Assistant $new_ver. Nothing changed; it will try again tomorrow." 2 warning; exit 1; }
 
 stamp=$(date -u +%Y%m%d-%H%M)
-tarball="$BACKUPS/ha-config-$stamp-$cur_ver.tgz"
+tarball="$BACKUPS/ha-config-$stamp-${cur_ver//[^0-9A-Za-z._-]/_}.tgz"
 echo "-- stopping Home Assistant"
 docker compose -f "$COMPOSE" stop homeassistant
 restart_old() { docker compose -f "$COMPOSE" start homeassistant; }
 
 echo "-- local copy of $CONF -> $tarball"
 tb="/b/$(basename "$tarball")"   # holds secrets.yaml: owner-only
-if ! docker run --rm -v "$CONF:/c:ro" -v "$BACKUPS:/b" alpine:latest \
-     sh -c "tar -C /c -czpf '$tb' . && chown $(id -u):$(id -g) '$tb' && chmod 600 '$tb'"; then
+if ! docker run --rm -v "$CONF:/c:ro" -v "$BACKUPS:/b" "$ALPINE" \
+     sh -c "umask 077 && tar -C /c -czpf '$tb' . && chown $(id -u):$(id -g) '$tb' && chmod 600 '$tb'"; then
   restart_old; ntfy "Home Assistant update skipped" "The local backup before updating to $new_ver failed. Home Assistant is unchanged and running. Ask Claude to look at ~/ha-update-logs." 3 warning; exit 1
 fi
 
 echo "-- restic snapshot (tag ha-update)"
 set -a; . "$HOME/.config/restic/home.env"; set +a
 mkdir -p "$HOME/.cache/restic-root"
-docker run --rm --hostname "$(hostname)" \
-  -e B2_ACCOUNT_ID -e B2_ACCOUNT_KEY -e RESTIC_REPOSITORY -e RESTIC_PASSWORD -e RESTIC_CACHE_DIR=/cache \
-  -v "$HOME/bin/restic:/usr/local/bin/restic:ro" -v "$HOME/.cache/restic-root:/cache" \
-  -v "$CONF:$CONF:ro" -v "$DIR:$DIR:ro" \
-  alpine:latest restic backup "$CONF" "$DIR" --tag ha-update --exclude "$CONF/home-assistant.log*"
+# The keys are NOT passed with -e (that would show them in `docker inspect`, review R6): the
+# container reads them itself from the env file, mounted read-only.
+restic_root() {
+  docker run --rm --hostname "$(hostname)" -e RESTIC_CACHE_DIR=/cache \
+    -v "$HOME/.config/restic/home.env:/run/restic.env:ro" \
+    -v "$HOME/bin/restic:/usr/local/bin/restic:ro" -v "$HOME/.cache/restic-root:/cache" \
+    -v "$CONF:$CONF:ro" -v "$DIR:$DIR:ro" \
+    "$ALPINE" sh -c 'set -a; . /run/restic.env; set +a; exec restic "$@"' restic "$@"
+}
+restic_root backup "$CONF" "$DIR" --tag ha-update --exclude "$CONF/home-assistant.log*"
 rc=$?
 if [ $rc -ne 0 ]; then
   restart_old; ntfy "Home Assistant update skipped" "The backup to Backblaze before updating to $new_ver failed (restic exit $rc). Home Assistant is unchanged and running. Ask Claude to look at ~/ha-update-logs." 3 warning; exit 1
@@ -177,7 +198,7 @@ fi
 echo "!! unhealthy - rolling back to $cur_ver"
 docker compose -f "$COMPOSE" stop homeassistant
 cp -p "$bak" "$COMPOSE"
-docker run --rm -v "$CONF:/c" -v "$BACKUPS:/b:ro" alpine:latest \
+docker run --rm -v "$CONF:/c" -v "$BACKUPS:/b:ro" "$ALPINE" \
   sh -c "find /c -mindepth 1 -delete && tar -C /c -xzpf '/b/$(basename "$tarball")'"
 docker compose -f "$COMPOSE" up -d homeassistant
 if [ $TEST_RB = 0 ]; then echo "$new" >>"$STATE/bad-digests"; fi

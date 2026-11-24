@@ -2,10 +2,17 @@
 # Image pinned to the digest of 2026.9.3. To update: back up ~/homeassistant, change the digest, docker compose up -d
 services:
   homeassistant:
-    image: ghcr.io/home-assistant/home-assistant@sha256:6785d1eca68747a524c156faae1b139ed415c07357386ae6fe17291986e59e82  # 2026.11.1
+    image: ghcr.io/home-assistant/home-assistant@sha256:493a07e8f6530fc640223f4a0a5248f20a61ca2f718bb1d31efbf08a2c5ea28f  # 2026.11.2
     container_name: homeassistant
     restart: unless-stopped
-    privileged: true
+    # "privileged: true" removed 2026-11-24 (review R6): no USB stick or Bluetooth is used, so Home
+    # Assistant no longer gets the host's disks and devices. If a Zigbee/Thread USB stick is added,
+    # pass just that device (devices: ["/dev/serial/by-id/...:/dev/ttyUSB0"]); for Bluetooth add
+    # cap_add: [NET_ADMIN, NET_RAW] and the /run/dbus mount. Undo: put "privileged: true" back.
+    # Expected at every start now: one log ERROR "Missing NET_ADMIN/NET_RAW capabilities for Bluetooth
+    # management". Harmless while Bluetooth is unused; NET_ADMIN is left out on purpose (it would let
+    # Home Assistant change the server's network and firewall settings).
+    security_opt: ["no-new-privileges:true"]
     network_mode: host
     mem_limit: 1536m
     environment:
